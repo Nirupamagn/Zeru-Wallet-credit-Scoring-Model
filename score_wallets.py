@@ -5,19 +5,30 @@ from sklearn.preprocessing import MinMaxScaler
 from sklearn.cluster import KMeans, DBSCAN
 from sklearn.mixture import GaussianMixture
 import numpy as np
+import matplotlib.pyplot as plt
 
 def load_data(filepath):
-    with open(filepath, 'r') as f:
-        data = json.load(f)
-    return pd.DataFrame(data)
+    try:
+        with open(filepath, 'r') as f:
+            data = json.load(f)
+        df = pd.DataFrame(data)
+        print("DataFrame columns:", df.columns)  # Print columns for debugging
+        return df
+    except FileNotFoundError:
+        print(f"Error: The file {filepath} was not found.")
+        return pd.DataFrame()  # Return an empty DataFrame
+    except json.JSONDecodeError:
+        print(f"Error: The file {filepath} is not a valid JSON.")
+        return pd.DataFrame()  # Return an empty DataFrame
 
 def engineer_features(df):
     # Convert timestamp to datetime
     df['timestamp_dt'] = pd.to_datetime(df['timestamp'], unit='s')
 
-    # Convert amount and assetPriceUSD to numeric, handling potential errors
-    df['actionData.amount'] = pd.to_numeric(df['actionData.amount'], errors='coerce')
-    df['actionData.assetPriceUSD'] = pd.to_numeric(df['actionData.assetPriceUSD'], errors='coerce')
+    # Extract fields from actionData
+    df['actionData.amount'] = pd.to_numeric(df['actionData'].apply(lambda x: x.get('amount', 0) if isinstance(x, dict) else 0), errors='coerce')
+    df['actionData.assetPriceUSD'] = pd.to_numeric(df['actionData'].apply(lambda x: x.get('assetPriceUSD', 0) if isinstance(x, dict) else 0), errors='coerce')
+    df['actionData.assetSymbol'] = df['actionData'].apply(lambda x: x.get('assetSymbol', '') if isinstance(x, dict) else '')
 
     # Calculate USD value for each transaction
     df['amount_usd'] = df['actionData.amount'] * df['actionData.assetPriceUSD']
@@ -56,10 +67,10 @@ def engineer_features(df):
 
     # Calculate derived ratios
     wallet_features['repay_to_borrow_ratio_usd'] = wallet_features['repay_total_amount_usd'] / wallet_features['borrow_total_amount_usd']
-    wallet_features['repay_to_borrow_ratio_usd'] = wallet_features['repay_to_borrow_ratio_usd'].replace([np.inf, -np.inf], 0).fillna(0) # Handle inf and NaN
+    wallet_features['repay_to_borrow_ratio_usd'] = wallet_features['repay_to_borrow_ratio_usd'].replace([np.inf, -np.inf], 0).fillna(0)  # Handle inf and NaN
 
     wallet_features['liquidation_ratio'] = wallet_features['liquidationcall_num_actions'] / wallet_features['borrow_num_actions']
-    wallet_features['liquidation_ratio'] = wallet_features['liquidation_ratio'].replace([np.inf, -np.inf], 0).fillna(0) # Handle inf and NaN
+    wallet_features['liquidation_ratio'] = wallet_features['liquidation_ratio'].replace([np.inf, -np.inf], 0).fillna(0)  # Handle inf and NaN
 
     # Select features for clustering
     features_for_clustering = [
@@ -93,24 +104,31 @@ def assign_credit_scores(wallet_features_df, features_for_clustering, algorithm=
     # Fit the model
     wallet_features_df['cluster'] = model.fit_predict(scaled_features)
 
-    # Determine score range for each cluster
-    # This is a simplified logic. In a real scenario, you'd analyze each cluster's mean features
-    # to assign scores more accurately. For this example, we'll sort by a proxy.
-    
-    # Create a proxy for "good" behavior to sort clusters
-    # Higher repay_to_borrow_ratio_usd, lower liquidation_ratio, higher total_deposit_usd
+    # Calculate behavior_proxy after clustering
     wallet_features_df['behavior_proxy'] = (
         wallet_features_df['repay_to_borrow_ratio_usd'] * 1000  # Amplify good behavior
-        - wallet_features_df['liquidation_ratio'] * 5000 # Penalize liquidations heavily
-        + wallet_features_df['deposit_total_amount_usd'] / 1e9 # Scale large amounts
+        - wallet_features_df['liquidation_ratio'] * 5000  # Penalize liquidations heavily
+        + wallet_features_df['deposit_total_amount_usd'] / 1e9  # Scale large amounts
     )
-    
-    # Calculate mean proxy for each cluster
-    cluster_means = wallet_features_df.groupby('cluster')['behavior_proxy'].mean().sort_values()
-    
-    # Assign scores based on sorted clusters
-    score_ranges = np.linspace(0, 1000, n_clusters + 1)
-    cluster_to_score_map = {cluster: (score_ranges[i], score_ranges[i+1]) for i, cluster in enumerate(cluster_means.index)}
+
+    # Determine the number of unique clusters
+    unique_clusters = wallet_features_df['cluster'].unique()
+    num_clusters = len(unique_clusters)
+
+    # Adjust for DBSCAN noise points
+    if algorithm == 'dbscan':
+        unique_clusters = unique_clusters[unique_clusters != -1]
+        num_clusters = len(unique_clusters)
+
+    # Check if there are any valid clusters
+    if num_clusters == 0:
+        print("No valid clusters found. Assigning default credit scores.")
+        wallet_features_df['credit_score'] = 0  # Assign a default score
+        return wallet_features_df[['userWallet', 'credit_score', 'cluster']]
+
+    # Create score ranges based on the number of clusters found
+    score_ranges = np.linspace(0, 1000, num_clusters + 1)
+    cluster_to_score_map = {cluster: (score_ranges[i], score_ranges[i + 1]) for i, cluster in enumerate(unique_clusters)}
 
     # Assign a score within the cluster's range based on individual wallet's behavior_proxy
     wallet_features_df['credit_score'] = 0.0
@@ -121,7 +139,7 @@ def assign_credit_scores(wallet_features_df, features_for_clustering, algorithm=
             min_proxy = cluster_wallets['behavior_proxy'].min()
             max_proxy = cluster_wallets['behavior_proxy'].max()
             
-            if max_proxy == min_proxy: # Handle case where all proxies in cluster are the same
+            if max_proxy == min_proxy:  # Handle case where all proxies in cluster are the same
                 wallet_features_df.loc[wallet_features_df['cluster'] == cluster_id, 'credit_score'] = (min_score + max_score) / 2
             else:
                 # Linear interpolation within the cluster's score range
@@ -133,8 +151,33 @@ def assign_credit_scores(wallet_features_df, features_for_clustering, algorithm=
 
     return wallet_features_df[['userWallet', 'credit_score', 'cluster']]
 
+def visualize_score_distribution(wallet_features_df):
+    plt.figure(figsize=(10, 6))
+    
+    # Define score ranges
+    bins = [0, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000]
+    labels = ['0-100', '100-200', '200-300', '300-400', '400-500', 
+              '500-600', '600-700', '700-800', '800-900', '900-1000']
+    
+    # Create a copy of the DataFrame to avoid SettingWithCopyWarning
+    df_copy = wallet_features_df.copy()
+    
+    # Create a histogram
+    df_copy['score_range'] = pd.cut(df_copy['credit_score'], bins=bins, labels=labels, right=False)
+    score_distribution = df_copy['score_range'].value_counts().sort_index()
+    
+    # Plotting
+    score_distribution.plot(kind='bar', color='blue', alpha=0.7)
+    plt.title('Distribution of Wallet Credit Scores')
+    plt.xlabel('Score Ranges')
+    plt.ylabel('Number of Wallets')
+    plt.xticks(rotation=45)
+    plt.grid(axis='y', alpha=0.75)
+    plt.savefig('score_distribution.png')  # Save the figure
+    plt.show()
+
 if __name__ == "__main__":
-    filepath = 'MultipleFiles/user-wallet-transactions.json' # Adjust path as needed
+    filepath = 'user-wallet-transactions.json'  # Adjust path as needed
     
     print("Loading data...")
     df = load_data(filepath)
@@ -160,6 +203,9 @@ if __name__ == "__main__":
     print("\nSample Scored Wallets (GMM):")
     print(scored_wallets_gmm.head())
     
+    # Visualize score distribution
+    visualize_score_distribution(scored_wallets_kmeans)
+
     # Save results
     scored_wallets_kmeans.to_csv('scored_wallets_kmeans.csv', index=False)
     scored_wallets_dbscan.to_csv('scored_wallets_dbscan.csv', index=False)

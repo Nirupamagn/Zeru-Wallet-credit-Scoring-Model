@@ -38,7 +38,7 @@ The methodology used for scoring:  assigns credit scores based on cluster featur
 6. Visualization: Generate a score distribution graph.
 
 Install the required libraries:
-pip install -r requirements.txt
+pip install -r requirement.txt
 
 Run the scoring script:
 python score_wallets.py

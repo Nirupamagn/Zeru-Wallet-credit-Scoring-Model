@@ -15,6 +15,28 @@ The concept of "feature engineering"  identifies important characteristics in tr
 - Diverse assets in deals
 The methodology used for scoring:  assigns credit scores based on cluster features and uses K-Means, DBSCAN, and Gaussian Mixture Models (GMM) to classify wallets according to their behavior.
 
+## Features Engineered
+- Total Transactions: Count of all transactions per wallet.
+- Unique Assets: Number of unique assets interacted with.
+- Transaction Amounts: Total amount deposited, borrowed, repaid, etc.
+- Transaction Frequency: Average time between transactions.
+- Last Transaction Age: Days since the last transaction.
+- Action Types: Breakdown of actions (deposit, borrow, repay, etc.).
+- Behavior Ratios: Ratios such as repay-to-borrow ratio.
+
+## Machine Learning Algorithms Used
+- K-Means: For clustering wallets based on transaction behavior.
+- DBSCAN: For identifying clusters and noise points.
+- Gaussian Mixture Model (GMM): For probabilistic clustering.
+
+## Processing Flow
+1. Load Data: Read the JSON file containing transaction data.
+2. Feature Engineering: Create features based on the transaction data.
+3. Clustering: Use multiple machine learning algorithms to cluster wallets based on engineered features.
+4. Score Calculation: Assign credit scores based on cluster assignments and behavior metrics.
+5. Output Results: Save the scored wallets to CSV files.
+6. Visualization: Generate a score distribution graph.
+
 Install the required libraries:
 pip install -r requirements.txt
 
